@@ -1,0 +1,980 @@
+---
+title: "totm_pr_infection"
+author: "Becca Belmonte"
+date: "14/05/2021"
+output: 
+    html_document:
+      code_folding: hide
+      number_sections: true
+      toc: true
+      toc_float: true
+      toc_depth: 3
+      fig_caption: true
+      theme: united
+      css: style.css
+      highlight: zenburn
+editor_options: 
+  chunk_output_type: console
+---
+
+<style>
+div.blue { background-color:#e6f0ff; border-radius: 5px; padding: 20px;}
+div.orange { background-color:#fff8dc; border-radius: 5px; padding: 20px;}
+</style>
+
+```{r setup, include=FALSE, warning=F, message=F}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, warning=F, message=F}
+library(readr)
+library(tidyr)
+library(dplyr)
+library(coxme)
+library(multcomp)
+library(scales)
+library(gridExtra)
+library(grid)
+library(DT)
+library(ggplot2)
+library(kableExtra)
+library(ggpubr)
+library(stringr)
+library(readxl)
+library(plyr)
+library(tidyverse)
+library(openxlsx)
+library(survival)
+library(multcomp)
+library(kableExtra)
+
+ggprep <- function(x){
+  d <- data.frame(condition=rep(names(x$strata), x$strata), time=x$time, survival=x$surv, upper=x$upper, lower=x$lower)
+conditions <- unique(d$condition)
+st<- data.frame(conditions,
+                rep(0,length(conditions)),
+                rep(1,length(conditions)),
+                rep(1,length(conditions)),
+                rep(1,length(conditions)))
+colnames(st) <- colnames(d)
+
+d <- rbind(st,d) %>% 
+  separate(condition, into = c("Sex", "Challenge", "Date"), sep = ",") %>% 
+  mutate(Sex = gsub(".*=","",Sex))%>% 
+  mutate(Challenge = gsub(".*=","",Challenge))%>% 
+  mutate(Date = gsub(".*=","",Date))
+return(d)
+}
+
+```
+# Data Import
+
+<div class = "orange">
+
+ After seeing that TotM was highly upregulated in males after P. rettgeri infection, I knocked down TotM in fat body cells using gene switch (S106) two days prior to infection. The knockdown is active when the flies are fed on RU+ food, so flies that have RU + food have decreased expression of TotM in their fat body cells. 
+
+
+## Libraries and import
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+library(readr)
+library(tidyr)
+library(coxme)
+library(multcomp)
+library(scales)
+library(gridExtra)
+library(grid)
+library(DT)
+library(ggplot2)
+library(kableExtra)
+library(ggpubr)
+library(stringr)
+library(ggbeeswarm)
+library(lme4)
+library(survival)
+library(tidyverse)
+library(survminer)
+library(readxl)
+library(plyr)
+library(tidyverse)
+library(openxlsx)
+source("score_sheet_prep.R")
+library(dplyr)
+```
+
+```{r}
+# score sheets to r compatible
+
+# function to convert days and times to understandable output and filter only injected flies
+
+excel_prep <- function(x){
+  library(readxl)
+  library(plyr)
+  library(tidyverse)
+  library(openxlsx)
+  
+  excel <- x %>% 
+    filter(!is.na(Time_of_injection) & !Time_of_injection == "Time_of_injection") %>% 
+    mutate(Day_of_injection = as.Date(as.numeric(Day_of_injection),origin = "1899-12-30")) %>% 
+    mutate(Time_of_injection = format(as.POSIXct(as.numeric(Time_of_injection) * 86400, origin = "1970-01-01", tz = "UTC"), "%H:%M")) %>% 
+    mutate(Day_of_death = as.Date(as.numeric(Day_of_death),origin = "1899-12-30")) %>% 
+    mutate(Time_of_death = format(as.POSIXct(as.numeric(Time_of_death) * 86400, origin = "1970-01-01", tz = "UTC"), "%H:%M"))
+  return(excel)
+}
+
+# Reads all sheets from files and extracts them all, then reformats them and combines into one dataframe
+
+read_excel_allsheets <- function(filename) {
+  
+  
+  sheets <- readxl::excel_sheets(filename)
+  sheets <- sheets[!sheets %in% c("metadata")]
+  x <- lapply(sheets, function(X) openxlsx::read.xlsx(filename, sheet = X, fillMergedCells = TRUE))
+  names(x) <- sheets
+  x <- ldply(x, data.frame)
+  x
+}
+
+ggprep <- function(x){
+  d <- data.frame(condition=rep(names(x$strata), x$strata), time=x$time, survival=x$surv, upper=x$upper, lower=x$lower)
+conditions <- unique(d$condition)
+st<- data.frame(conditions,
+                rep(0,length(conditions)),
+                rep(1,length(conditions)),
+                rep(1,length(conditions)),
+                rep(1,length(conditions)))
+colnames(st) <- colnames(d)
+
+d <- rbind(st,d) %>% 
+  separate(condition, into = c("Food","Sex"), sep = ",") %>% 
+  mutate(Sex = gsub(".*=","",Sex))%>% 
+  mutate(Food = gsub(".*=","",Food))
+return(d)
+}
+
+```
+
+
+# 28 Oct
+## Libraries and import
+```{r, warning=F, message=F}
+library(readr)
+library(tidyr)
+library(coxme)
+library(multcomp)
+library(scales)
+library(gridExtra)
+library(grid)
+library(DT)
+library(ggplot2)
+library(kableExtra)
+library(ggpubr)
+library(stringr)
+library(ggbeeswarm)
+library(lme4)
+library(survival)
+library(tidyverse)
+library(survminer)
+library(readxl)
+library(plyr)
+library(tidyverse)
+library(openxlsx)
+source("score_sheet_prep.R")
+library(dplyr)
+```
+
+```{r Import, warning=F, message=F}
+
+oct_28 <- read_excel_allsheets("Data/20211027_score_sheet.xlsx")
+
+
+colors_sex <- c("#D3C164", "#05366E")
+#names(colors_sex) <- c("Female", "Male")
+lines <- c("dashed", "solid")
+#names(lines) <- c("PBS", "S. aureus")
+colors_inf <- c("#FEC98D", "#000004")
+#names(colors_inf) <- c("Uninfected", "Infected")
+
+
+extract_coxph_table <- function (mod){
+    beta <- (mod$coefficients)
+    nvar <- length(beta)
+    nfrail <- nrow(mod$var) - nvar
+    se <- sqrt(diag(mod$var)[nfrail + 1:nvar])
+    z<- round(beta/se, 2)
+    p<- format(as.numeric(1 - pchisq((beta/se)^2, 1)), 4)
+    table=data.frame(cbind(beta,se,z,p))
+    return(table)
+ }
+```
+
+### Graph
+```{r, warning=F, message=F}
+ggprep <- function(x){
+  d <- data.frame(condition=rep(names(x$strata), x$strata), time=x$time, survival=x$surv, upper=x$upper, lower=x$lower)
+conditions <- unique(d$condition)
+st<- data.frame(conditions,
+                rep(0,length(conditions)),
+                rep(1,length(conditions)),
+                rep(1,length(conditions)),
+                rep(1,length(conditions)))
+colnames(st) <- colnames(d)
+
+d <- rbind(st,d) %>% 
+  separate(condition, into = c("Sex", "Challenge", "Date"), sep = ",") %>% 
+  mutate(Sex = gsub(".*=","",Sex))%>% 
+  mutate(Challenge = gsub(".*=","",Challenge))%>% 
+  mutate(Date = gsub(".*=","",Date))
+return(d)
+}
+
+oct_28_all <- oct_28 %>% 
+  unite(total_time_of_death, Day_of_death, Time_of_death, sep = " ", remove = FALSE) %>% 
+  unite(total_time_of_injection, Day_of_injection, Time_of_injection, sep = " ", remove = FALSE) %>% 
+  mutate(total_time_of_death =  as.POSIXct(total_time_of_death, format = "%Y-%m-%d %H:%M")) %>% 
+  mutate(total_time_of_injection =  as.POSIXct(total_time_of_injection, format = "%Y-%m-%d %H:%M")) %>% 
+  mutate(Time_to_death = ((total_time_of_death - total_time_of_injection))) %>% 
+  mutate(Time_to_death = as.numeric(Time_to_death)) %>% 
+  mutate(Censor = as.numeric(Censor))
+
+oct_28_all$OD[is.na(oct_28_all$OD)] <- 0
+
+oct_28_all$Challenge <- relevel(as.factor(oct_28_all$Challenge), ref = "P_rettgeri")
+
+surv <- survfit(Surv(Time_to_death, Censor) ~ Sex + Challenge + Food, data = oct_28_all)
+
+d <- ggprep(surv)
+
+d$Challenge <- relevel(as.factor(d$Challenge), ref = "PBS       ")
+
+(totm_graph <- ggplot(d, aes(x = time, y = survival, color = Date, ymin = lower, ymax = upper, fill = Date)) +
+  geom_line() +
+  geom_ribbon(alpha = 0.5) +
+  geom_point(size = 1.5) +
+   theme_bw() +
+    ylab("Proportion Alive") +
+    xlab("Hours post injection") +
+    scale_colour_manual(values = colors_food) +
+  scale_fill_viridis_d(option = "cividis") +
+  facet_grid(Challenge~Sex, scales = "free") +
+  ylim(c(0, 1)) +
+    ggtitle("S106xTotM RNAi infection (OD = 0.1)"))
+
+#ggsave("S106xTotM Pr/20211027/survival_graph.png", plot = totm_graph, device = NULL, width = 200, height = 180, units = "mm", dpi = 300)
+```
+
+
+# 03 Nov 
+## Import
+```{r Import, warning=F, message=F}
+
+nov_3 <- read_excel_allsheets("Data/20211103_score_sheet.xlsx")
+
+
+colors_sex <- c("#D3C164", "#05366E")
+#names(colors_sex) <- c("Female", "Male")
+lines <- c("dashed", "solid")
+#names(lines) <- c("PBS", "S. aureus")
+colors_inf <- c("#FEC98D", "#000004")
+#names(colors_inf) <- c("Uninfected", "Infected")
+```
+
+## Graph 
+
+```{r, warning=F, message=F}
+ggprep <- function(x){
+  d <- data.frame(condition=rep(names(x$strata), x$strata), time=x$time, survival=x$surv, upper=x$upper, lower=x$lower)
+conditions <- unique(d$condition)
+st<- data.frame(conditions,
+                rep(0,length(conditions)),
+                rep(1,length(conditions)),
+                rep(1,length(conditions)),
+                rep(1,length(conditions)))
+colnames(st) <- colnames(d)
+
+d <- rbind(st,d) %>% 
+  separate(condition, into = c("Sex", "Challenge", "Date"), sep = ",") %>% 
+  mutate(Sex = gsub(".*=","",Sex))%>% 
+  mutate(Challenge = gsub(".*=","",Challenge))%>% 
+  mutate(Date = gsub(".*=","",Date))
+return(d)
+}
+
+nov_3_all <- nov_3 %>% 
+  unite(total_time_of_death, Day_of_death, Time_of_death, sep = " ", remove = FALSE) %>% 
+  unite(total_time_of_injection, Day_of_injection, Time_of_injection, sep = " ", remove = FALSE) %>% 
+  mutate(total_time_of_death =  as.POSIXct(total_time_of_death, format = "%Y-%m-%d %H:%M")) %>% 
+  mutate(total_time_of_injection =  as.POSIXct(total_time_of_injection, format = "%Y-%m-%d %H:%M")) %>% 
+  mutate(Time_to_death = ((total_time_of_death - total_time_of_injection))) %>% 
+  mutate(Time_to_death = as.numeric(Time_to_death)) %>% 
+  mutate(Censor = as.numeric(Censor))
+
+nov_3_all$OD[is.na(nov_3_all$OD)] <- 0
+
+nov_3_all$Challenge <- relevel(as.factor(nov_3_all$Challenge), ref = "P_rettgeri")
+
+surv <- survfit(Surv(Time_to_death, Censor) ~ Sex + Challenge + Food, data = nov_3_all)
+
+d <- ggprep(surv)
+
+d$Challenge <- relevel(as.factor(d$Challenge), ref = "PBS       ")
+
+(totm_graph <- ggplot(d, aes(x = time, y = survival, color = Date, ymin = lower, ymax = upper, fill = Date)) +
+  geom_line() +
+  geom_ribbon(alpha = 0.5) +
+  geom_point(size = 1.5) +
+   theme_bw() +
+    ylab("Proportion Alive") +
+    xlab("Hours post injection") +
+    scale_colour_manual(values = colors_food) +
+  scale_fill_viridis_d(option = "cividis") +
+  facet_grid(Challenge~Sex, scales = "free") +
+  ylim(c(0, 1)) +
+    ggtitle("S106xTotM RNAi infection (OD = 0.1)"))
+
+#ggsave("S106xTotM Pr/20211027/survival_graph.png", plot = totm_graph, device = NULL, width = 200, height = 180, units = "mm", dpi = 300)
+```
+
+## Model
+```{r, warning=F, message=F}
+nov_3_inf <- nov_3_all %>% 
+  filter(Challenge == "P_rettgeri") %>% 
+  mutate(Vial_num_unique = paste(.id, Vial_num, sep = "_")) %>% 
+  mutate(Group = str_c(Sex, Food, sep = "_"))
+
+m1.0 <- coxph(Surv(Time_to_death, Censor) ~ frailty(Vial_num_unique) + Sex + Food + Sex:Food, data = nov_3_inf)
+m1.1 <- coxph(Surv(Time_to_death, Censor) ~ frailty(Vial_num_unique) + Sex + Food, data = nov_3_inf)
+anova(m1.0, m1.1)
+
+model_Group <- coxph(Surv(Time_to_death,Censor) ~ frailty(Vial_num_unique) + Group, data= nov_3_inf)
+
+multcomp = glht(model_Group, linfct=mcp(Group="Tukey"))
+Comp = cld(multcomp)
+
+unlist(Comp$mcletters$Letters)%>%
+  kable(col.names = "Sign.group") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = F)
+```
+
+
+# Combine 28/10 and 03/11
+## Graph
+```{r}
+oct_28 <- oct_28 %>% 
+  mutate(date = "oct_28")
+nov_3 <- nov_3 %>% 
+  mutate(date = "nov_3")
+comb <- rbind(oct_28, nov_3)
+
+ggprep_4_var <- function(x){
+  d <- data.frame(condition=rep(names(x$strata), x$strata), time=x$time, survival=x$surv, upper=x$upper, lower=x$lower)
+conditions <- unique(d$condition)
+st<- data.frame(conditions,
+                rep(0,length(conditions)),
+                rep(1,length(conditions)),
+                rep(1,length(conditions)),
+                rep(1,length(conditions)))
+colnames(st) <- colnames(d)
+
+d <- rbind(st,d) %>% 
+  separate(condition, into = c("Sex", "Challenge", "Food", "Date"), sep = ",") %>% 
+  mutate(Sex = gsub(".*=","",Sex))%>% 
+  mutate(Challenge = gsub(".*=","",Challenge))%>% 
+  mutate(Food = gsub(".*=","",Food))%>% 
+  mutate(Date = gsub(".*=","",Date))
+return(d)
+}
+
+comb_all <- comb %>% 
+  unite(total_time_of_death, Day_of_death, Time_of_death, sep = " ", remove = FALSE) %>% 
+  unite(total_time_of_injection, Day_of_injection, Time_of_injection, sep = " ", remove = FALSE) %>% 
+  mutate(total_time_of_death =  as.POSIXct(total_time_of_death, format = "%Y-%m-%d %H:%M")) %>% 
+  mutate(total_time_of_injection =  as.POSIXct(total_time_of_injection, format = "%Y-%m-%d %H:%M")) %>% 
+  mutate(Time_to_death = ((total_time_of_death - total_time_of_injection))) %>% 
+  mutate(Time_to_death = as.numeric(Time_to_death)) %>% 
+  mutate(Censor = as.numeric(Censor))
+
+comb_all$OD[is.na(comb_all$OD)] <- 0
+
+comb_all$Challenge <- relevel(as.factor(comb_all$Challenge), ref = "P_rettgeri")
+
+surv <- survfit(Surv(Time_to_death, Censor) ~ Sex + Challenge + Food + date, data = comb_all)
+d <- ggprep_4_var(surv)
+
+d$Challenge <- relevel(as.factor(d$Challenge), ref = "PBS       ")
+
+(totm_graph <- ggplot((d %>% filter(Challenge == "P_rettgeri")), aes(x = time, y = survival, color = Food, ymin = lower, ymax = upper, fill = Food)) +
+  geom_line() +
+  geom_ribbon(alpha = 0.5) +
+  geom_point(size = 1.5) +
+   theme_bw() +
+    ylab("Proportion Alive") +
+    xlab("Hours post injection") +
+    scale_colour_viridis_d(option = "cividis") +
+  scale_fill_viridis_d(option = "cividis") +
+  facet_grid(Date~Sex, scales = "free") +
+  ylim(c(0, 1)) +
+    ggtitle("S106xTotM RNAi infection (OD = 0.1)"))
+
+surv <- survfit(Surv(Time_to_death, Censor) ~ Sex + Challenge + Food, data = comb_all)
+d <- ggprep(surv) %>% 
+  filter(Challenge == "P_rettgeri" & time < 90)
+colors_food <- c("#440154", "#21A685")
+(totm_graph <- ggplot((d), aes(x = time, y = survival, color = Date, ymin = lower, ymax = upper, fill = Date)) +
+  geom_line() +
+  geom_ribbon(alpha = 0.5) +
+  geom_point(size = 1.5) +
+   theme_bw() +
+    ylab("Proportion Alive") +
+    xlab("Hours post injection") +
+    scale_colour_manual(values = colors_food,
+                        labels = c("Control", "TotM-RNAi"), name = NULL) +
+  scale_fill_manual(values = colors_food, labels = c("Control", "TotM-RNAi"), name = NULL) +
+  facet_grid(~Sex, scales = "free") +
+  ylim(c(0, 1)) +
+    ggtitle("Survival to P. rettgeri after fat-body\nspecific knockdown of TotM") +
+    theme(aspect.ratio = 1, strip.background = element_rect(fill = "white")))
+#ggsave("totm_survival.png", plot = totm_graph, width = 5.5, height = 3)
+```
+
+## Model
+```{r, warning=F, message=F}
+comb_inf <- comb_all %>% 
+  filter(Challenge == "P_rettgeri") %>% 
+  mutate(Vial_num_unique = paste(.id, Vial_num, date, sep = "_")) %>% 
+  mutate(Group = str_c(Sex, Food, sep = "_"))
+
+m1.0 <- coxph(Surv(Time_to_death, Censor) ~ frailty(Vial_num_unique) + Sex*Food, data = comb_inf)
+m1.1 <- coxph(Surv(Time_to_death, Censor) ~ frailty(Vial_num_unique)+Sex + Food, data = comb_inf)
+anova(m1.0, m1.1)
+
+mfood <- coxph(Surv(Time_to_death, Censor) ~ frailty(Vial_num_unique) + Sex+ Food, data = comb_inf)
+mfood.1 <- coxph(Surv(Time_to_death, Censor) ~ frailty(Vial_num_unique)+Sex, data = comb_inf)
+anova(mfood, mfood.1)
+
+msex <- coxph(Surv(Time_to_death, Censor) ~ frailty(Vial_num_unique) + Food + Sex, data = comb_inf)
+msex.1 <- coxph(Surv(Time_to_death, Censor) ~ frailty(Vial_num_unique)+Food, data = comb_inf)
+anova(msex, msex.1)
+
+model_Group <- coxph(Surv(Time_to_death,Censor) ~ Group, data= comb_inf)
+
+multcomp = glht(model_Group, linfct=mcp(Group="Tukey"))
+Comp = cld(multcomp)
+
+unlist(Comp$mcletters$Letters)%>%
+  kable(col.names = "Sign.group") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = F)
+```
+
+## Hazard Ratio
+```{r}
+colors_food <- c("#440154", "#21A685")
+tab_res_surv_int = extract_coxph_table(model_Group)
+
+tab_res_surv_int <- tab_res_surv_int %>% 
+  mutate(beta = as.numeric(beta)) %>% 
+  mutate(se = as.numeric(se)) %>% 
+  mutate(z = as.numeric(z)) %>% 
+  mutate(p = as.numeric(p))%>% 
+  mutate(Treatment = rownames(tab_res_surv_int)) %>% 
+  add_row(beta = 0, se = 0, Treatment = "GroupFemale_neg_RU") %>% 
+  separate(Treatment, into = c("Sex", "Food"), sep = -6, remove = FALSE) %>%
+  mutate(Sex = gsub("Group", "", Sex)) %>% 
+  mutate(Sex = gsub("_", "", Sex)) %>% 
+  mutate(HazardRatio = exp(beta))
+
+ann_text <- comb_inf %>% 
+  group_by(Sex, Food) %>% 
+  add_count() %>% 
+  ungroup() %>% 
+  distinct(Sex, Food, n) %>% 
+  mutate(n = paste("n =", n))
+
+gg_hr <- tab_res_surv_int %>% 
+  left_join(ann_text)
+
+
+(HR_plot <- ggplot(tab_res_surv_int, aes(x = Sex, y = beta)) +
+    geom_errorbar(aes(ymin = beta-se, ymax = beta+se, col = Food), position = position_dodge(width = 1)) +
+    geom_point(aes(col = Food), position = position_dodge(width = 1)) +
+    geom_label(aes(label = gg_hr$n, y = (beta+se+0.1), group = Food), position = position_dodge(width =.9)) +
+    theme_bw() +
+    scale_colour_manual(values = colors_food, labels = c("Control", "TotM-RNAi"), name = NULL) +
+    ylab("log(Hazard ratio)(\u00B1se)") +
+    theme(aspect.ratio = 1) +
+    xlab(""))
+#ggsave("totm_hr.png", plot = HR_plot, width = 5, height = 3.5)
+```
+
+
+# hml-upd3 RNAi
+```{r}
+library(readxl)
+library(plyr)
+library(tidyverse)
+library(openxlsx)
+library(survival)
+library(multcomp)
+library(kableExtra)
+```
+
+```{r}
+# score sheets to r compatible
+
+# function to convert days and times to understandable output and filter only injected flies
+
+excel_prep <- function(x){
+  library(readxl)
+  library(plyr)
+  library(tidyverse)
+  library(openxlsx)
+  
+  excel <- x %>% 
+    filter(!is.na(Time_of_injection) & !Time_of_injection == "Time_of_injection") %>% 
+    mutate(Day_of_injection = as.Date(as.numeric(Day_of_injection),origin = "1899-12-30")) %>% 
+    mutate(Time_of_injection = format(as.POSIXct(as.numeric(Time_of_injection) * 86400, origin = "1970-01-01", tz = "UTC"), "%H:%M")) %>% 
+    mutate(Day_of_death = as.Date(as.numeric(Day_of_death),origin = "1899-12-30")) %>% 
+    mutate(Time_of_death = format(as.POSIXct(as.numeric(Time_of_death) * 86400, origin = "1970-01-01", tz = "UTC"), "%H:%M"))
+  return(excel)
+}
+
+# Reads all sheets from files and extracts them all, then reformats them and combines into one dataframe
+
+read_excel_allsheets <- function(filename) {
+  
+  
+  sheets <- readxl::excel_sheets(filename)
+  sheets <- sheets[!sheets %in% c("metadata")]
+  x <- lapply(sheets, function(X) openxlsx::read.xlsx(filename, sheet = X, fillMergedCells = TRUE))
+  names(x) <- sheets
+  x <- ldply(x, data.frame)
+  x
+}
+
+ggprep <- function(x){
+  d <- data.frame(condition=rep(names(x$strata), x$strata), time=x$time, survival=x$surv, upper=x$upper, lower=x$lower)
+conditions <- unique(d$condition)
+st<- data.frame(conditions,
+                rep(0,length(conditions)),
+                rep(1,length(conditions)),
+                rep(1,length(conditions)),
+                rep(1,length(conditions)))
+colnames(st) <- colnames(d)
+
+d <- rbind(st,d) %>% 
+  separate(condition, into = c("Food","Sex"), sep = ",") %>% 
+  mutate(Sex = gsub(".*=","",Sex))%>% 
+  mutate(Food = gsub(".*=","",Food))
+return(d)
+}
+
+```
+
+# BLUD infection
+```{r}
+blud_score_sheet <- read_excel("Data/blud_score_sheet_20221409.xlsx",
+                               col_types = c("text", "text", "text",   "date", "date", "numeric",
+                                             "text")) %>% 
+  mutate(Time_to_death = (as.numeric(Time_dead - Time_injected)),
+         Box = paste(Genotype, Food, sep = "_")) 
+colors_sex <- c("#D3C164", "#05366E")
+```
+
+```{r}
+# ru_pos <- blud_score_sheet %>% 
+#   filter(Food == "RU_pos")
+
+surv <- survfit(Surv(Time_to_death, Censor) ~ Box + Sex, data = blud_score_sheet)
+x <- surv
+{
+  d <- data.frame(condition=rep(names(x$strata), x$strata), time=x$time, survival=x$surv, upper=x$upper, lower=x$lower)
+conditions <- unique(d$condition)
+st<- data.frame(conditions,
+                rep(0,length(conditions)),
+                rep(1,length(conditions)),
+                rep(1,length(conditions)),
+                rep(1,length(conditions)))
+colnames(st) <- colnames(d)
+
+d <- rbind(st,d) %>% 
+  separate(condition, into = c("Food","Sex"), sep = ",") %>% 
+  mutate(Sex = gsub(".*=","",Sex))%>% 
+  mutate(Food = gsub(".*=","",Food))
+}
+colors_food <- c("#440154", "#7AD151")
+
+(upd3_survival <- d %>% 
+    filter(!Food == "hml_GS_RU_pos" & time < 90) %>% 
+ggplot(aes(x = time, y = survival, color = Food, ymin = lower, ymax = upper, fill = Food)) +
+  geom_line() +
+  geom_ribbon(alpha = 0.5) +
+  geom_point(size = 1.5) +
+  facet_grid(~Sex) +
+  ylab("Proportion alive") +
+  xlab("Hours post injection") +
+  labs(color = "", fill = "") +
+  scale_color_manual(values = colors_food, labels = c("Control", "upd3-RNAi")) +
+  scale_fill_manual(values = colors_food, labels = c("Control", "upd3-RNAi")) +
+  theme_bw() +
+  theme(aspect.ratio = 1, strip.background = element_rect(fill = "white")) +
+  ylim(c(0, 1)) +
+    ggtitle("Survival to P. rettgeri infection after hemocyte-specific\nupd3 knockdown"))
+#ggsave("upd3_survival.png", plot = upd3_survival, width = 5.5, height = 3)
+```
+
+
+```{r}
+blud_inf <- blud_score_sheet %>% 
+  filter(!Box == "hml_GS_RU_pos") %>% 
+  mutate(Group = paste(Box, Sex, sep = "_"))
+
+m1 <- coxph(Surv(Time_to_death, Censor) ~ Box*Sex, data = blud_inf)
+m1.1 <- coxph(Surv(Time_to_death, Censor) ~ Box + Sex, data = blud_inf)
+anova(m1, m1.1)
+
+msex <- coxph(Surv(Time_to_death, Censor) ~ Box+ Sex, data = blud_inf)
+msex.1 <- coxph(Surv(Time_to_death, Censor) ~ Box, data = blud_inf)
+anova(msex, msex.1)
+
+mupd <- coxph(Surv(Time_to_death, Censor) ~ Sex + Box, data = blud_inf)
+mupd.1 <- coxph(Surv(Time_to_death, Censor) ~ Sex, data = blud_inf)
+anova(mupd, mupd.1)
+
+model_Group <- coxph(Surv(Time_to_death,Censor) ~ Group, data= blud_inf)
+
+multcomp = glht(model_Group, linfct=mcp(Group="Tukey"))
+Comp = cld(multcomp)
+
+unlist(Comp$mcletters$Letters)%>%
+  kable(col.names = "Sign.group") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = F)
+```
+
+## Hazard Ratio
+```{r}
+colors_food <- c("#440154", "#7AD151")
+
+tab_res_surv_int = extract_coxph_table(model_Group)
+
+tab_res_surv_int <- tab_res_surv_int %>% 
+  mutate(beta = as.numeric(beta)) %>% 
+  mutate(se = as.numeric(se)) %>% 
+  mutate(z = as.numeric(z)) %>% 
+  mutate(p = as.numeric(p))%>% 
+  mutate(Treatment = rownames(tab_res_surv_int)) %>% 
+  add_row(beta = 0, se = 0, Treatment = "Grouphml_upd3_RNAi_RU_neg_Female") %>% 
+  separate(Treatment, into = c("Grouphml", "upd3", "RNAi", "RU", "Food", "Sex"), remove = FALSE) %>%
+  mutate(Food = paste(RU, Food, sep = "_")) %>% 
+  mutate(HazardRatio = exp(beta))
+
+ann_text <- blud_inf %>% 
+  group_by(Sex, Food) %>% 
+  add_count() %>% 
+  ungroup() %>% 
+  distinct(Sex, Food, n) %>% 
+  mutate(n = paste("n =", n))
+
+gg_hr <- tab_res_surv_int %>% 
+  left_join(ann_text)
+
+
+(HR_plot <- ggplot(tab_res_surv_int, aes(x = Sex, y = beta)) +
+    geom_errorbar(aes(ymin = beta-se, ymax = beta+se, col = Food), position = position_dodge(width = 1)) +
+    geom_point(aes(col = Food), position = position_dodge(width = 1)) +
+    geom_label(aes(label = gg_hr$n, y = (beta+se+0.2), group = Food), position = position_dodge(width =.9)) +
+    theme_bw() +
+    scale_colour_manual(values = colors_food, labels = c("Control", "upd3-RNAi"), name = NULL) +
+    ylab("log(Hazard ratio)(\u00B1se)") +
+    theme(aspect.ratio = 1) +
+    xlab(""))
+#ggsave("upd3_hr.png", plot = HR_plot, width = 5, height = 3.5)
+```
+
+## Clearance 
+```{r}
+library(CFUfit)
+library(spaMM)
+library(ggbeeswarm)
+library(tidyverse)
+upd3_clearance <- read.csv("Data/COUNTS_clearance.csv", sep = ";") %>% 
+  dplyr::select(-`NA.`)
+upd3_time0 <- read.csv("Data/COUNTS_time_0.csv", sep = ";") %>% 
+  dplyr::select(-NA.)
+
+upd3_clearance <- rbind(upd3_clearance, upd3_time0)
+```
+
+```{r}
+tidy_counts <- upd3_clearance %>% 
+  filter(BACTERIA < Inf & BACTERIA > 0) %>% 
+  separate(WELL, into = c("row", "indiv"), sep = 1) %>% 
+  separate(Name, into = c("genotype", "sex"), remove = FALSE) %>% 
+  mutate(replicate = case_when(row %in% c("A", "B", "C", "D") ~ "rep_1",
+                               TRUE ~ "rep_2")) %>% 
+  mutate(date = "Sep_14") %>% 
+  mutate(indiv_label = paste(Name, indiv, replicate, date, sep = "."),
+         individual = paste(Name, indiv, sep = ".")) %>% 
+  group_by(individual) %>% 
+  mutate(time = case_when(Name == "0.hr" ~ 0,
+                          TRUE ~ 8))
+  #mutate(time = factor(as.factor(time), levels = c("t0", "t4", "t8", "t12"))) %>% 
+  #separate(time, into = c("t", "hours"), remove = FALSE, sep = 1) %>%
+  #mutate(hours = as.numeric(hours),
+   #      sq_hours = hours^2)
+
+hour_8 <- tidy_counts %>% 
+  filter(time == 8)
+
+hml_upd3_8 <- tidy_counts %>% 
+  filter(time == 8 & !genotype == "hmlgs")
+
+data_load = 
+       with(tidy_counts,
+            loadEstimate(BACTERIA,1/Dilution,Volume, individual,
+                         maxCFU = 100, 
+                         ignoreAboveMaxCFU = TRUE,
+                         logbase = 2))
+
+model.full = fitme(BACTERIA ~  genotype * sex +
+                         (1|individual) +
+                         offset(log(Volume)-log(Dilution*250)),
+                       family=negbin(link="log"),
+                       rand.family=Gamma(link="log"),
+                       data =subset(hml_upd3_8,!is.na(BACTERIA)))
+    
+    model.2 = fitme(BACTERIA ~  genotype + sex +
+                         (1|individual) +
+                         offset(log(Volume)-log(Dilution*250)),
+                       family=negbin(link="log"),
+                       rand.family=Gamma(link="log"),
+                       data =subset(hml_upd3_8,!is.na(BACTERIA)))
+anova(model.full, model.2)
+
+model.full = fitme(BACTERIA ~  genotype + sex +
+                         (1|individual) +
+                         offset(log(Volume)-log(Dilution*250)),
+                       family=negbin(link="log"),
+                       rand.family=Gamma(link="log"),
+                       data =subset(hml_upd3_8,!is.na(BACTERIA)))
+    
+    model.2 = fitme(BACTERIA ~  sex +
+                         (1|individual) +
+                         offset(log(Volume)-log(Dilution*250)),
+                       family=negbin(link="log"),
+                       rand.family=Gamma(link="log"),
+                       data =subset(hml_upd3_8,!is.na(BACTERIA)))
+anova(model.full, model.2)
+
+model.full = fitme(BACTERIA ~  genotype + sex +
+                         (1|individual) +
+                         offset(log(Volume)-log(Dilution*250)),
+                       family=negbin(link="log"),
+                       rand.family=Gamma(link="log"),
+                       data =subset(hml_upd3_8,!is.na(BACTERIA)))
+    
+    model.2 = fitme(BACTERIA ~  genotype + 
+                         (1|individual) +
+                         offset(log(Volume)-log(Dilution*250)),
+                       family=negbin(link="log"),
+                       rand.family=Gamma(link="log"),
+                       data =subset(hml_upd3_8,!is.na(BACTERIA)))
+anova(model.full, model.2)
+```
+
+```{r}
+gg_data <- data_load %>% 
+  filter(!is.na(load)) %>% 
+  mutate(estimate = load*250) %>% 
+  separate(sampleID, into = c("genotype", "sex", "rep"), remove = FALSE) %>% 
+  mutate(time = case_when(sex == "hr" ~ 0,
+                          TRUE ~ 8),
+         sex = case_when(sex == "hr" ~ "NA",
+                         TRUE ~ sex)) %>% 
+  mutate(log2 = log2(estimate)) %>% 
+  mutate(group = paste(time, genotype, sex))
+
+(upd3_clearance_gg <- ggplot((gg_data %>% filter(!genotype == "hmlgs")), aes(x = as.factor(time), y = log2(estimate), color = genotype, shape = sex)) +
+  #geom_smooth(method = "lm", aes(fill = sex, color = sex)) +
+  geom_boxplot(aes(fill = genotype), alpha = 0.25, outlier.shape = NA) +
+  geom_quasirandom(aes(color = genotype),dodge.width = 0.75) +
+  theme_bw() +
+  scale_color_manual(values = c(colors_food), limits = c("runeg", "rupos"), labels = c("Control", "upd3-RNAi"), name = NULL) +
+  scale_fill_manual(values =  c(colors_food), limits = c("runeg", "rupos"), labels = c("Control", "upd3-RNAi"), name = NULL) +
+  scale_shape_manual(values = c("triangle", "square"), limits = c("female", "male"), labels = c("Female", "Male"), name = NULL) +
+  #annotate("text", x = p_val$hours, y = (log2(p_val$y_pos)+0.5), label = p_val$p_val) +
+  #annotate("text", x = "8hr", y = 16, label = "0.383") +
+  ylab("log2 of P. rettgeri colony\nforming units (CFU) per fly") +
+  xlab("Hours post injection") +
+  ggtitle("Bacterial load of P. rettgeri during infection\nafter hemocyte-specific upd3 knockdown"))
+#ggsave(filename = "upd3_clearance.png", upd3_clearance, width = 4.25, height = 3)
+```
+
+## BLUD
+```{r}
+library(tidyverse)
+library(CFUfit)
+library(spaMM)
+upd3_blud <- read.csv("Data/COUNTS_BLUD.csv", sep = ";") %>% 
+  dplyr::select(-NA.)
+upd3_blud2 <- read.csv("Data/COUNTS_rupos.csv", sep = ";") %>% 
+  dplyr::select(-NA.)
+upd3_time0 <- read.csv("Data/COUNTS_time_0.csv", sep = ";") %>% 
+  dplyr::select(-NA.)
+plate_guide <- read.csv("Data/plate_guide.csv")
+
+upd3_blud <- rbind(upd3_blud, upd3_blud2, upd3_time0)
+```
+
+```{r}
+tidy_counts <- upd3_blud %>% 
+  filter(BACTERIA < Inf & BACTERIA > 0) %>% 
+  separate(WELL, into = c("row", "indiv"), sep = 1) %>% 
+  mutate(indiv = as.integer(indiv)) %>% 
+  separate(Name, into = c("genotype", "sex", "plate","rep"), remove = FALSE, sep ="\\.") %>% 
+  mutate(date = "Sep_15") %>% 
+  # mutate(genotype = case_when((genotype == "hmlgs+runeg" & indiv %in% c("1", "2", "3")) ~ "hmlgs",
+  #                             (genotype == "hmlgs+runeg" & indiv %in% c("4", "5", "6", "7", "8", "9", "10", "11", "12")) ~ "runeg",
+  #                             (genotype == "hmlgs+rupos" & indiv %in% c("1", "2", "3", "4", "5", "6")) ~ "hmlgs",
+  #                             (genotype == "hmlgs+rupos" & indiv %in% c("7", "8", "9", "10", "11", "12")) ~ "rupos",
+  #                                                                      TRUE ~ genotype)) %>% 
+  separate(Name, into = c("unique_plate", "plate_rep"), sep = -2) %>% 
+  left_join(plate_guide) %>% 
+  mutate(individual = paste(unique_plate, indiv, sep = ".")) %>% 
+  group_by(individual) %>% 
+  mutate(time = case_when(sex == "hr" ~ "0_hr",
+                          TRUE ~ "BLUD")) %>% 
+  ungroup()
+
+BLUD <- tidy_counts %>% 
+  filter(time == "BLUD")
+
+hml_upd3_BLUD <- tidy_counts %>% 
+  filter(time == "BLUD" & !Genotype == "Hml_gs")
+
+data_load = 
+       with(tidy_counts,
+            loadEstimate(BACTERIA,1/Dilution,Volume, individual,
+                         maxCFU = 100, 
+                         ignoreAboveMaxCFU = TRUE,
+                         logbase = 2))
+
+model.full = fitme(BACTERIA ~  food * sex +
+                         (1|individual) +
+                         offset(log(Volume)-log(Dilution*250)),
+                       family=negbin(link="log"),
+                       rand.family=Gamma(link="log"),
+                       data =subset(hml_upd3_BLUD,!is.na(BACTERIA)))
+    
+    model.2 = fitme(BACTERIA ~  food + sex +
+                         (1|individual) +
+                         offset(log(Volume)-log(Dilution*250)),
+                       family=negbin(link="log"),
+                       rand.family=Gamma(link="log"),
+                       data =subset(hml_upd3_BLUD,!is.na(BACTERIA)))
+anova(model.full, model.2)
+
+model.full = fitme(BACTERIA ~  food + sex +
+                         (1|individual) +
+                         offset(log(Volume)-log(Dilution*250)),
+                       family=negbin(link="log"),
+                       rand.family=Gamma(link="log"),
+                       data =subset(hml_upd3_BLUD,!is.na(BACTERIA)))
+    
+    model.2 = fitme(BACTERIA ~  sex +
+                         (1|individual) +
+                         offset(log(Volume)-log(Dilution*250)),
+                       family=negbin(link="log"),
+                       rand.family=Gamma(link="log"),
+                       data =subset(hml_upd3_BLUD,!is.na(BACTERIA)))
+anova(model.full, model.2)
+
+model.full = fitme(BACTERIA ~  food + sex +
+                         (1|individual) +
+                         offset(log(Volume)-log(Dilution*250)),
+                       family=negbin(link="log"),
+                       rand.family=Gamma(link="log"),
+                       data =subset(hml_upd3_BLUD,!is.na(BACTERIA)))
+    
+    model.2 = fitme(BACTERIA ~  food + 
+                         (1|individual) +
+                         offset(log(Volume)-log(Dilution*250)),
+                       family=negbin(link="log"),
+                       rand.family=Gamma(link="log"),
+                       data =subset(hml_upd3_BLUD,!is.na(BACTERIA)))
+anova(model.full, model.2)
+
+
+
+model.full = fitme(BACTERIA ~  sex +
+                         (1|individual) +
+                         offset(log(Volume)-log(Dilution*250)),
+                       family=negbin(link="log"),
+                       rand.family=Gamma(link="log"),
+                       data =subset(hml_upd3_BLUD,!is.na(BACTERIA) & food == "RU_neg"))
+    
+    model.2 = fitme(BACTERIA ~  1 +
+                         (1|individual) +
+                         offset(log(Volume)-log(Dilution*250)),
+                       family=negbin(link="log"),
+                       rand.family=Gamma(link="log"),
+                       data =subset(hml_upd3_BLUD,!is.na(BACTERIA) & food == "RU_neg"))
+anova(model.full, model.2)
+
+model.full = fitme(BACTERIA ~  sex +
+                         (1|individual) +
+                         offset(log(Volume)-log(Dilution*250)),
+                       family=negbin(link="log"),
+                       rand.family=Gamma(link="log"),
+                       data =subset(hml_upd3_BLUD,!is.na(BACTERIA) & food == "RU_pos"))
+    
+    model.2 = fitme(BACTERIA ~  1 +
+                         (1|individual) +
+                         offset(log(Volume)-log(Dilution*250)),
+                       family=negbin(link="log"),
+                       rand.family=Gamma(link="log"),
+                       data =subset(hml_upd3_BLUD,!is.na(BACTERIA) & food == "RU_pos"))
+anova(model.full, model.2)
+
+```
+
+```{r}
+gg_data <- data_load %>% 
+  filter(!is.na(load)) %>% 
+  mutate(estimate = load*250) %>% 
+  separate(sampleID, into = c("genotype","sex", "indiv", "plate_rep"), sep = "\\.", remove = FALSE, extra = "merge") %>% 
+  mutate(unique_plate = case_when(is.na(plate_rep)~paste(genotype, sex, sep = "."),
+                                  TRUE ~ paste(genotype, sex, indiv, sep = "."))) %>% 
+  mutate(indiv = case_when(is.na(plate_rep) ~ as.integer(indiv),
+                                 TRUE ~ as.integer(plate_rep))) %>% 
+  left_join(plate_guide) %>% 
+  mutate(time = case_when(genotype == "0" ~ "0_hr",
+                          TRUE ~ "BLUD")) %>% 
+  mutate(log2 = log2(estimate))%>% 
+  mutate(group = case_when(time == "BLUD" ~ paste(Genotype, Sex, food),
+                           time == "0_hr" ~ "0_hr")) %>% 
+  distinct(sampleID, .keep_all = TRUE)
+
+
+food_labs <- c("Control", "upd3-RNAi")
+names(food_labs) <- c("RU_neg", "RU_pos")
+
+(upd3_blud_gg <- ggplot((gg_data %>% filter(!genotype == "hmlgs" & !time == "0_hr")), aes(x = sex, y = log2(estimate), color = food)) +
+  #geom_smooth(method = "lm", aes(fill = sex, color = sex)) +
+  geom_boxplot(aes(fill = food), alpha = 0.25, outlier.shape = NA) +
+  geom_quasirandom(dodge.width = 0.75) +
+  theme_bw()  +
+  scale_color_manual(values = colors_food) +
+  scale_fill_manual(values = colors_food) +
+  facet_wrap(~food, labeller = labeller(food = food_labs)) +
+  scale_x_discrete(breaks=c("female","male"),
+        labels=c("Female", "Male")) +
+  theme(legend.position = "none", strip.background = element_rect(fill = "white")) +
+  #annotate("text", x = p_val$hours, y = (log2(p_val$y_pos)+0.5), label = p_val$p_val) +
+  #annotate("text", x = "8hr", y = 16, label = "0.383") +
+  ylab("log2 of P. rettgeri colony\nforming units (CFU) per fly") +
+  xlab("") +
+  ggtitle("Bacterial load of P. rettgeri upon death") +
+  ylim(c(11,35)))
+#ggsave(filename = "upd3_blud.png", upd3_blud_gg, width = 4.25, height = 3)
+```
+
+
